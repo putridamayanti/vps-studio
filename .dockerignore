@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+.env
+data
+vps-studio
+client/node_modules
+client/.next
+client/.env
+client/.env.*
