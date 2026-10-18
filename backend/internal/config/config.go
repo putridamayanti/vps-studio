@@ -12,9 +12,11 @@ import (
 )
 
 type Config struct {
-	Port         string
-	APIKey       string
-	SecretKey    string
+	Port      string
+	APIKey    string
+	SecretKey string
+	// DatabaseURL is a Postgres URL (e.g. Neon). When empty, the SQLite file at DatabasePath is used.
+	DatabaseURL  string
 	DatabasePath string
 
 	// DockerNetwork is the bridge network every deployed app joins.
@@ -33,6 +35,7 @@ func Load() (Config, error) {
 		Port:          getenv("PORT", "8081"),
 		APIKey:        os.Getenv("API_KEY"),
 		SecretKey:     os.Getenv("SECRET_KEY"),
+		DatabaseURL:   os.Getenv("DATABASE_URL"),
 		DatabasePath:  getenv("DATABASE_PATH", "data/vps-studio.db"),
 		DockerNetwork: getenv("DOCKER_NETWORK", "vps-studio"),
 	}
@@ -50,6 +53,14 @@ func Load() (Config, error) {
 		return cfg, errors.New("SECRET_KEY is required (min 16 chars)")
 	}
 	return cfg, nil
+}
+
+// DatabaseDSN is what store.Open should connect to.
+func (c Config) DatabaseDSN() string {
+	if c.DatabaseURL != "" {
+		return c.DatabaseURL
+	}
+	return c.DatabasePath
 }
 
 func getenv(key, fallback string) string {

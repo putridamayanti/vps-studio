@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"errors"
-	"strings"
 	"time"
 )
 
@@ -42,10 +41,10 @@ func (s *Store) CreateServer(srv *Server) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO servers (`+serverColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = s.exec(`INSERT INTO servers (`+serverColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		srv.ID, srv.Name, srv.Host, srv.Port, srv.Username, password, key, srv.HostKey, srv.ACMEEmail, srv.Status,
 		srv.SetupLog, now.Unix(), now.Unix())
-	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
+	if isUniqueViolation(err) {
 		return ErrConflict
 	}
 	return err
@@ -57,17 +56,17 @@ func (s *Store) UpdateServer(srv *Server) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE servers SET host=?, port=?, username=?, password=?, private_key=?, host_key=?, acme_email=?, updated_at=? WHERE id=?`,
+	_, err = s.exec(`UPDATE servers SET host=?, port=?, username=?, password=?, private_key=?, host_key=?, acme_email=?, updated_at=? WHERE id=?`,
 		srv.Host, srv.Port, srv.Username, password, key, srv.HostKey, srv.ACMEEmail, srv.UpdatedAt.Unix(), srv.ID)
 	return err
 }
 
 func (s *Store) GetServer(idOrName string) (*Server, error) {
-	return s.scanServer(s.db.QueryRow(`SELECT `+serverColumns+` FROM servers WHERE id=? OR name=?`, idOrName, idOrName))
+	return s.scanServer(s.queryRow(`SELECT `+serverColumns+` FROM servers WHERE id=? OR name=?`, idOrName, idOrName))
 }
 
 func (s *Store) ListServers() ([]Server, error) {
-	rows, err := s.db.Query(`SELECT ` + serverColumns + ` FROM servers ORDER BY name`)
+	rows, err := s.query(`SELECT ` + serverColumns + ` FROM servers ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -85,33 +84,33 @@ func (s *Store) ListServers() ([]Server, error) {
 }
 
 func (s *Store) DeleteServer(id string) error {
-	_, err := s.db.Exec(`DELETE FROM servers WHERE id=?`, id)
+	_, err := s.exec(`DELETE FROM servers WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) CountAppsOnServer(id string) (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM apps WHERE server_id=?`, id).Scan(&n)
+	err := s.queryRow(`SELECT COUNT(*) FROM apps WHERE server_id=?`, id).Scan(&n)
 	return n, err
 }
 
 func (s *Store) SetServerHostKey(id, hostKey string) error {
-	_, err := s.db.Exec(`UPDATE servers SET host_key=? WHERE id=?`, hostKey, id)
+	_, err := s.exec(`UPDATE servers SET host_key=? WHERE id=?`, hostKey, id)
 	return err
 }
 
 func (s *Store) SetServerStatus(id string, status ServerStatus) error {
-	_, err := s.db.Exec(`UPDATE servers SET status=?, updated_at=? WHERE id=?`, status, time.Now().UTC().Unix(), id)
+	_, err := s.exec(`UPDATE servers SET status=?, updated_at=? WHERE id=?`, status, time.Now().UTC().Unix(), id)
 	return err
 }
 
 func (s *Store) ResetServerLog(id string) error {
-	_, err := s.db.Exec(`UPDATE servers SET setup_log='' WHERE id=?`, id)
+	_, err := s.exec(`UPDATE servers SET setup_log='' WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) AppendServerLog(id, line string) error {
-	_, err := s.db.Exec(`UPDATE servers SET setup_log = setup_log || ? WHERE id=?`, line+"\n", id)
+	_, err := s.exec(`UPDATE servers SET setup_log = setup_log || ? WHERE id=?`, line+"\n", id)
 	return err
 }
 

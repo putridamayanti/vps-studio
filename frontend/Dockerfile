@@ -1,4 +1,4 @@
-# vps-studio dashboard (Next.js). Listens on :3100 and proxies /api, /hooks and /healthz to
+# vps-studio dashboard (Next.js). Listens on :3100 and proxies /api and /hooks to
 # API_URL (the backend image), which is read when the container starts.
 
 FROM node:24-alpine AS build

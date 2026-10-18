@@ -24,7 +24,14 @@ cp .env.example .env              # fill in API_KEY and SECRET_KEY (openssl rand
 go run ./cmd/server               # reads .env from the current directory, listens on :8081
 ```
 
-Data (servers, apps, deployments) is stored in `data/vps-studio.db`.
+Data (servers, apps, deployments) is stored in the Postgres database at `DATABASE_URL` (e.g. Neon)
+when it's set, otherwise in the SQLite file `data/vps-studio.db`.
+
+To copy existing SQLite data into Postgres (once, with the same `SECRET_KEY`):
+
+```bash
+go run ./cmd/server migrate-sqlite            # or: migrate-sqlite path/to/vps-studio.db
+```
 
 ## 1. Add your VPS
 

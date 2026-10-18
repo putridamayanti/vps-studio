@@ -1,5 +1,6 @@
 # vps-studio API (Go). Listens on :8081 and stores its database in /data.
-# The dashboard image (../frontend) proxies /api, /hooks and /healthz to it.
+# The dashboard image (../frontend) proxies /api and /hooks to it.
+# /healthz is only used by the HEALTHCHECK below and isn't exposed through the dashboard.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src

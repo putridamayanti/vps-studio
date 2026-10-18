@@ -15,7 +15,7 @@ browser ──► frontend (Next.js, :3100) ──► backend (Go API, :8081)
 | Folder | What it is | Image |
 |---|---|---|
 | [backend/](backend/) | Go API: stores servers and apps, deploys over SSH. API reference in [backend/README.md](backend/README.md) | `ghcr.io/<owner>/<repo>-backend` |
-| [frontend/](frontend/) | Next.js dashboard. Proxies `/api`, `/hooks` and `/healthz` to the backend | `ghcr.io/<owner>/<repo>-frontend` |
+| [frontend/](frontend/) | Next.js dashboard. Proxies `/api` and `/hooks` to the backend | `ghcr.io/<owner>/<repo>-frontend` |
 
 The browser only talks to the frontend. The backend doesn't need to be exposed to the internet.
 
@@ -28,7 +28,7 @@ Requirements: Go 1.26+, Node.js 24+.
 ```bash
 cd backend
 cp .env.example .env      # set API_KEY and SECRET_KEY: openssl rand -hex 32
-go run ./cmd/server       # http://localhost:8081, data in backend/data/vps-studio.db
+go run ./cmd/server       # http://localhost:8081; uses DATABASE_URL if set, else backend/data/vps-studio.db
 ```
 
 **2. Frontend** (terminal 2):
@@ -141,7 +141,12 @@ A public HTTPS URL is also what the CI deploy webhooks need
 
 ### Data and secrets
 
-- The database is in the `vps-studio-data` volume (`/data` in the backend container). Back it up.
+- Set `DATABASE_URL` to a Postgres database (e.g. Neon) to keep data outside the container. Without
+  it, the backend uses SQLite in the `vps-studio-data` volume (`/data` in the backend container);
+  back that up.
+- To move existing SQLite data into Postgres, run once with `DATABASE_URL` set:
+  `go run ./cmd/server migrate-sqlite [path/to/vps-studio.db]`. It refuses to run if the target
+  already has data. Use the same `SECRET_KEY` afterwards.
 - Keep `SECRET_KEY` unchanged after adding servers; it decrypts the stored VPS logins and registry
   tokens.
 - vps-studio can run anything on the servers it manages. Keep `API_KEY`, `SECRET_KEY` and the data
@@ -156,7 +161,8 @@ Backend (`backend` service in `docker-compose.yml`, or `backend/.env` locally):
 | `API_KEY` | — | Required, min 16 chars. Sign-in key for the dashboard and `/api/*` |
 | `SECRET_KEY` | — | Required, min 16 chars. Encrypts secrets at rest |
 | `PORT` | `8081` | |
-| `DATABASE_PATH` | `data/vps-studio.db` (image: `/data/vps-studio.db`) | |
+| `DATABASE_URL` | — | Postgres URL, e.g. Neon's `postgresql://...?sslmode=require`. Overrides `DATABASE_PATH` |
+| `DATABASE_PATH` | `data/vps-studio.db` (image: `/data/vps-studio.db`) | SQLite file, used when `DATABASE_URL` is empty |
 | `DOCKER_NETWORK` | `vps-studio` | Network deployed apps join on each VPS |
 | `STARTUP_GRACE_SECONDS` | `5` | How long a new container must stay up before a deploy succeeds |
 
@@ -166,6 +172,122 @@ Frontend:
 |---|---|---|
 | `API_URL` | `http://localhost:8081` (image: `http://backend:8081`) | Backend address, read at startup |
 | `PORT` | `3100` | |
+
+## Deploy the frontend to Vercel (from your machine)
+
+You can host the dashboard on Vercel and keep the backend on your own server. You deploy straight
+from your laptop with the Vercel CLI, so no Git connection or GitHub Actions setup is needed.
+
+```
+browser ──► Vercel (frontend) ──HTTPS──► your server (backend, :8081)
+```
+
+The frontend on Vercel forwards `/api` and `/hooks` to `API_URL`, so **the backend
+needs a public HTTPS URL** (for example `https://api.example.com`).
+
+### 1. Run the backend with a public URL
+
+On your server, log in to GHCR if the package is private (see [Deploy](#deploy)), then start only
+the backend. Bind it to `127.0.0.1` so it's reachable only through the reverse proxy:
+
+```bash
+docker run -d --name vps-studio-backend --restart unless-stopped \
+  -p 127.0.0.1:8081:8081 \
+  -e API_KEY=<openssl rand -hex 32> \
+  -e SECRET_KEY=<openssl rand -hex 32> \
+  -v vps-studio-data:/data \
+  ghcr.io/<owner>/<repo>-backend:latest
+```
+
+Point a DNS A record (`api.example.com`) at the server, then put HTTPS in front of it. With
+Caddy (`/etc/caddy/Caddyfile`):
+
+```
+api.example.com {
+  reverse_proxy localhost:8081
+}
+```
+
+Check it from the server: `curl localhost:8081/healthz` should return `{"status":"ok"}`.
+
+`/healthz` is meant for Docker's health check only. To keep it off the internet, block it in Caddy:
+
+```
+api.example.com {
+  respond /healthz 404
+  reverse_proxy localhost:8081
+}
+```
+
+Every `/api/*` call needs `API_KEY`, but the backend is now on the internet, so use a long random
+key.
+
+### 2. Install the Vercel CLI and log in
+
+```bash
+npm install -g vercel
+vercel login
+```
+
+### 3. Link the frontend folder to a Vercel project
+
+Run every Vercel command from `frontend/`, so Vercel treats it as the project root:
+
+```bash
+cd frontend
+vercel link
+```
+
+Answer the prompts: choose your scope, then create a new project (e.g. `vps-studio`) or pick an
+existing one. Vercel detects Next.js automatically; keep the default build settings. This creates
+`frontend/.vercel/` (already git-ignored).
+
+### 4. Set `API_URL`
+
+```bash
+vercel env add API_URL production --value https://api.example.com
+vercel env add API_URL preview --value https://api.example.com   # optional, for preview deploys
+```
+
+Don't add a trailing slash. `API_URL` is read on every request, so if you change it later, redeploy
+(step 5) for the new value to take effect.
+
+### 5. Deploy
+
+```bash
+vercel          # preview deployment, gets its own URL
+vercel --prod   # production deployment
+```
+
+The CLI uploads `frontend/`, builds it on Vercel and prints the URL. Open it and sign in with the
+backend's `API_KEY`.
+
+To add your own domain (e.g. `studio.example.com`):
+
+```bash
+vercel domains add studio.example.com
+```
+
+Then add the DNS record Vercel shows you.
+
+### Updating
+
+After changing the frontend, deploy again from `frontend/`:
+
+```bash
+vercel --prod
+```
+
+To roll back to the previous production deployment: `vercel rollback`.
+
+### Notes
+
+- Webhook URLs shown in the dashboard use the Vercel domain. They work because `/hooks/*` is
+  forwarded to the backend.
+- `vercel env ls` lists the variables. `vercel env pull .env` downloads them for local development,
+  but it overwrites your local `frontend/.env`, which points at `http://localhost:8081`.
+- The GitHub Actions frontend image is still built, but you don't need it when Vercel hosts the
+  frontend.
 
 ## Using vps-studio
 

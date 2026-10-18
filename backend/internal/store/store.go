@@ -1,15 +1,18 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
 	"vps-studio/internal/crypto"
@@ -59,8 +62,9 @@ type Deployment struct {
 }
 
 type Store struct {
-	db     *sql.DB
-	cipher *crypto.Cipher
+	db       *sql.DB
+	cipher   *crypto.Cipher
+	postgres bool
 }
 
 const schema = `
@@ -76,8 +80,8 @@ CREATE TABLE IF NOT EXISTS servers (
 	acme_email  TEXT NOT NULL DEFAULT '',
 	status      TEXT NOT NULL,
 	setup_log   TEXT NOT NULL DEFAULT '',
-	created_at  INTEGER NOT NULL,
-	updated_at  INTEGER NOT NULL
+	created_at  BIGINT NOT NULL,
+	updated_at  BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS apps (
 	id                TEXT PRIMARY KEY,
@@ -92,8 +96,8 @@ CREATE TABLE IF NOT EXISTS apps (
 	domain            TEXT NOT NULL DEFAULT '',
 	env               TEXT NOT NULL DEFAULT '{}',
 	webhook_token     TEXT NOT NULL,
-	created_at        INTEGER NOT NULL,
-	updated_at        INTEGER NOT NULL
+	created_at        BIGINT NOT NULL,
+	updated_at        BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS deployments (
 	id           TEXT PRIMARY KEY,
@@ -104,18 +108,26 @@ CREATE TABLE IF NOT EXISTS deployments (
 	log          TEXT NOT NULL DEFAULT '',
 	error        TEXT NOT NULL DEFAULT '',
 	container_id TEXT NOT NULL DEFAULT '',
-	created_at   INTEGER NOT NULL,
-	finished_at  INTEGER NOT NULL DEFAULT 0
+	created_at   BIGINT NOT NULL,
+	finished_at  BIGINT NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_deployments_app ON deployments(app_id, created_at DESC);
 `
 
-func Open(path string, cipher *crypto.Cipher) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+// IsPostgresURL reports whether dsn is a Postgres connection URL rather than a SQLite file path.
+func IsPostgresURL(dsn string) bool {
+	return strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://")
+}
+
+// Open connects to Postgres when dsn is a postgres:// URL, otherwise opens (or creates) a SQLite file at dsn.
+func Open(dsn string, cipher *crypto.Cipher) (*Store, error) {
+	if IsPostgresURL(dsn) {
+		return openPostgres(dsn, cipher)
+	}
+	if err := os.MkdirAll(filepath.Dir(dsn), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +138,64 @@ func Open(path string, cipher *crypto.Cipher) (*Store, error) {
 	return &Store{db: db, cipher: cipher}, nil
 }
 
+func openPostgres(url string, cipher *crypto.Cipher) (*Store, error) {
+	db, err := sql.Open("pgx", url)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(10)
+	// Serverless Postgres (e.g. Neon) drops idle connections; don't hold them for long.
+	db.SetConnMaxIdleTime(4 * time.Minute)
+
+	// Generous timeout: a suspended Neon compute takes a few seconds to wake up.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("connect to postgres: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return &Store{db: db, cipher: cipher, postgres: true}, nil
+}
+
 func (s *Store) Close() error { return s.db.Close() }
+
+// rebind rewrites ? placeholders to $1, $2, ... for Postgres. Queries never contain a literal '?'.
+func (s *Store) rebind(query string) string {
+	if !s.postgres {
+		return query
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range query {
+		if r == '?' {
+			n++
+			b.WriteString("$" + strconv.Itoa(n))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func (s *Store) exec(query string, args ...any) (sql.Result, error) {
+	return s.db.Exec(s.rebind(query), args...)
+}
+
+func (s *Store) query(query string, args ...any) (*sql.Rows, error) {
+	return s.db.Query(s.rebind(query), args...)
+}
+
+func (s *Store) queryRow(query string, args ...any) *sql.Row {
+	return s.db.QueryRow(s.rebind(query), args...)
+}
+
+func isUniqueViolation(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "SQLSTATE 23505"))
+}
 
 // ---- apps ----
 
@@ -139,10 +208,10 @@ func (s *Store) CreateApp(a *App) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO apps (`+appColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = s.exec(`INSERT INTO apps (`+appColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Name, a.ServerID, a.Image, a.Registry, a.RegistryUsername, token, a.Port, a.HostPort, a.Domain, env,
 		a.WebhookToken, now.Unix(), now.Unix())
-	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
+	if isUniqueViolation(err) {
 		return ErrConflict
 	}
 	return err
@@ -154,7 +223,7 @@ func (s *Store) UpdateApp(a *App) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`UPDATE apps SET image=?, registry=?, registry_username=?, registry_token=?, port=?, host_port=?, domain=?, env=?, webhook_token=?, updated_at=? WHERE id=?`,
+	res, err := s.exec(`UPDATE apps SET image=?, registry=?, registry_username=?, registry_token=?, port=?, host_port=?, domain=?, env=?, webhook_token=?, updated_at=? WHERE id=?`,
 		a.Image, a.Registry, a.RegistryUsername, token, a.Port, a.HostPort, a.Domain, env, a.WebhookToken, a.UpdatedAt.Unix(), a.ID)
 	if err != nil {
 		return err
@@ -167,17 +236,17 @@ func (s *Store) UpdateApp(a *App) error {
 
 // SetAppImage records the image that is now running, e.g. after a deploy of a new tag.
 func (s *Store) SetAppImage(id, image string) error {
-	_, err := s.db.Exec(`UPDATE apps SET image=?, updated_at=? WHERE id=?`, image, time.Now().UTC().Unix(), id)
+	_, err := s.exec(`UPDATE apps SET image=?, updated_at=? WHERE id=?`, image, time.Now().UTC().Unix(), id)
 	return err
 }
 
 func (s *Store) GetApp(id string) (*App, error) {
-	row := s.db.QueryRow(`SELECT `+appColumns+` FROM apps WHERE id=? OR name=?`, id, id)
+	row := s.queryRow(`SELECT `+appColumns+` FROM apps WHERE id=? OR name=?`, id, id)
 	return s.scanApp(row)
 }
 
 func (s *Store) ListApps() ([]App, error) {
-	rows, err := s.db.Query(`SELECT ` + appColumns + ` FROM apps ORDER BY name`)
+	rows, err := s.query(`SELECT ` + appColumns + ` FROM apps ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +263,7 @@ func (s *Store) ListApps() ([]App, error) {
 }
 
 func (s *Store) DeleteApp(id string) error {
-	_, err := s.db.Exec(`DELETE FROM apps WHERE id=?`, id)
+	_, err := s.exec(`DELETE FROM apps WHERE id=?`, id)
 	return err
 }
 
@@ -240,33 +309,33 @@ const deploymentColumns = `id, app_id, image, status, trigger, log, error, conta
 
 func (s *Store) CreateDeployment(d *Deployment) error {
 	d.CreatedAt = time.Now().UTC()
-	_, err := s.db.Exec(`INSERT INTO deployments (`+deploymentColumns+`) VALUES (?,?,?,?,?,?,?,?,?,0)`,
+	_, err := s.exec(`INSERT INTO deployments (`+deploymentColumns+`) VALUES (?,?,?,?,?,?,?,?,?,0)`,
 		d.ID, d.AppID, d.Image, d.Status, d.Trigger, d.Log, d.Error, d.ContainerID, d.CreatedAt.Unix())
 	return err
 }
 
 func (s *Store) SetDeploymentStatus(id string, status DeploymentStatus) error {
-	_, err := s.db.Exec(`UPDATE deployments SET status=? WHERE id=?`, status, id)
+	_, err := s.exec(`UPDATE deployments SET status=? WHERE id=?`, status, id)
 	return err
 }
 
 func (s *Store) AppendDeploymentLog(id, line string) error {
-	_, err := s.db.Exec(`UPDATE deployments SET log = log || ? WHERE id=?`, line+"\n", id)
+	_, err := s.exec(`UPDATE deployments SET log = log || ? WHERE id=?`, line+"\n", id)
 	return err
 }
 
 func (s *Store) FinishDeployment(id string, status DeploymentStatus, containerID, errMsg string) error {
-	_, err := s.db.Exec(`UPDATE deployments SET status=?, container_id=?, error=?, finished_at=? WHERE id=?`,
+	_, err := s.exec(`UPDATE deployments SET status=?, container_id=?, error=?, finished_at=? WHERE id=?`,
 		status, containerID, errMsg, time.Now().UTC().Unix(), id)
 	return err
 }
 
 func (s *Store) GetDeployment(id string) (*Deployment, error) {
-	return scanDeployment(s.db.QueryRow(`SELECT `+deploymentColumns+` FROM deployments WHERE id=?`, id))
+	return scanDeployment(s.queryRow(`SELECT `+deploymentColumns+` FROM deployments WHERE id=?`, id))
 }
 
 func (s *Store) ListDeployments(appID string, limit int) ([]Deployment, error) {
-	rows, err := s.db.Query(`SELECT `+deploymentColumns+` FROM deployments WHERE app_id=? ORDER BY created_at DESC LIMIT ?`, appID, limit)
+	rows, err := s.query(`SELECT `+deploymentColumns+` FROM deployments WHERE app_id=? ORDER BY created_at DESC LIMIT ?`, appID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -285,10 +354,10 @@ func (s *Store) ListDeployments(appID string, limit int) ([]Deployment, error) {
 
 // FailInterrupted marks deployments left in progress by a previous process as failed.
 func (s *Store) FailInterrupted() error {
-	if _, err := s.db.Exec(`UPDATE servers SET status=? WHERE status=?`, ServerError, ServerSettingUp); err != nil {
+	if _, err := s.exec(`UPDATE servers SET status=? WHERE status=?`, ServerError, ServerSettingUp); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE deployments SET status=?, error='interrupted by server restart', finished_at=? WHERE status IN (?,?,?)`,
+	_, err := s.exec(`UPDATE deployments SET status=?, error='interrupted by server restart', finished_at=? WHERE status IN (?,?,?)`,
 		StatusFailed, time.Now().UTC().Unix(), StatusQueued, StatusPulling, StatusStarting)
 	return err
 }
