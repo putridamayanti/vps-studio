@@ -5,9 +5,9 @@ Web dashboard for vps-studio, built with Next.js and shadcn/ui.
 ## Run it
 
 ```bash
-cp .env.example .env     # set API_URL if the Go server isn't on http://localhost:8080
+cp .env.example .env     # set API_URL if the Go server isn't on http://localhost:8081
 npm install
-npm run dev              # http://localhost:3000
+npm run dev              # http://localhost:3100
 ```
 
 Sign in with the server's `API_KEY`. The key is stored in this browser's localStorage and expires

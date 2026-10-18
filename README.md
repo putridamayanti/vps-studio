@@ -18,7 +18,7 @@ VPS ── Docker ── your apps
 
 ```bash
 cp .env.example .env              # fill in API_KEY and SECRET_KEY (openssl rand -hex 32)
-go run ./cmd/server               # reads .env from the current directory, listens on :8080
+go run ./cmd/server               # reads .env from the current directory, listens on :8081
 ```
 
 Data (servers, apps, deployments) is stored in `data/vps-studio.db`.
@@ -26,7 +26,7 @@ Data (servers, apps, deployments) is stored in `data/vps-studio.db`.
 ## 1. Add your VPS
 
 ```bash
-curl -X POST localhost:8080/api/servers \
+curl -X POST localhost:8081/api/servers \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "name": "sumopod",
@@ -62,7 +62,7 @@ changes. If you rebuild the VPS, delete the server and add it again.
 ## 2. Deploy an app
 
 ```bash
-curl -X POST localhost:8080/api/apps \
+curl -X POST localhost:8081/api/apps \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "name": "my-api",
@@ -96,7 +96,7 @@ Upload your `.env` file as it is. It's merged into the app's env: keys in the fi
 updated, and other keys stay unchanged.
 
 ```bash
-curl -X PUT "localhost:8080/api/apps/my-api/env?deploy=true" \
+curl -X PUT "localhost:8081/api/apps/my-api/env?deploy=true" \
   -H "Authorization: Bearer $API_KEY" --data-binary @.env
 ```
 
@@ -108,7 +108,7 @@ curl -X PUT "localhost:8080/api/apps/my-api/env?deploy=true" \
 Change or remove single keys without the file:
 
 ```bash
-curl -X PATCH localhost:8080/api/apps/my-api -H "Authorization: Bearer $API_KEY" \
+curl -X PATCH localhost:8081/api/apps/my-api -H "Authorization: Bearer $API_KEY" \
   -d '{"env": {"APP_DEBUG": "false", "OLD_KEY": null}, "deploy": true}'
 ```
 
@@ -168,21 +168,21 @@ The webhook can only deploy a tag or digest of the app's own repository.
 ## Docker image
 
 The `Dockerfile` builds one image with the API and the web dashboard ([client/](client/)). The
-dashboard listens on port 3000 and proxies `/api`, `/hooks` and `/healthz` to the API inside the
-container, so only port 3000 needs to be published.
+dashboard listens on port 3100 and proxies `/api`, `/hooks` and `/healthz` to the API inside the
+container, so only port 3100 needs to be published.
 
 Pushing to `main` (or a `v*` tag) builds and publishes `ghcr.io/<owner>/<repo>` with
 [.github/workflows/docker.yml](.github/workflows/docker.yml).
 
 ```bash
 docker run -d --name vps-studio --restart unless-stopped \
-  -p 3000:3000 \
+  -p 3100:3100 \
   -e API_KEY=... -e SECRET_KEY=... \
   -v vps-studio-data:/data \
   ghcr.io/<owner>/<repo>:latest
 ```
 
-Keep `/data` on a volume: it holds the database. Open `http://<host>:3000` and sign in with `API_KEY`.
+Keep `/data` on a volume: it holds the database. Open `http://<host>:3100` and sign in with `API_KEY`.
 
 ## Adding another registry
 

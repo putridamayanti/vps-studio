@@ -1,7 +1,7 @@
 # One image with both parts of vps-studio:
-#   - the Go API on :8080 (internal only)
-#   - the Next.js dashboard on :3000, which proxies /api, /hooks and /healthz to the API
-# Only port 3000 needs to be published.
+#   - the Go API on :8081 (internal only)
+#   - the Next.js dashboard on :3100, which proxies /api, /hooks and /healthz to the API
+# Only port 3100 needs to be published.
 
 FROM golang:1.26-alpine AS api
 WORKDIR /src
@@ -33,7 +33,7 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     DATABASE_PATH=/data/vps-studio.db
 VOLUME /data
-EXPOSE 3000
+EXPOSE 3100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1
+  CMD wget -qO- http://127.0.0.1:3100/healthz >/dev/null || exit 1
 ENTRYPOINT ["/sbin/tini", "--", "start.sh"]

@@ -30,7 +30,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Port:          getenv("PORT", "8080"),
+		Port:          getenv("PORT", "8081"),
 		APIKey:        os.Getenv("API_KEY"),
 		SecretKey:     os.Getenv("SECRET_KEY"),
 		DatabasePath:  getenv("DATABASE_PATH", "data/vps-studio.db"),

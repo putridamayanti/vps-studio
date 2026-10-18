@@ -3,12 +3,12 @@
 set -u
 
 # Both servers read PORT, so set each one explicitly. The dashboard proxies to the API on
-# localhost:8080 (baked into the client build), so the API port is fixed.
-PORT=8080 vps-studio &
+# localhost:8081 (baked into the client build), so the API port is fixed.
+PORT=8081 vps-studio &
 api=$!
 
 cd /app/client
-PORT="${PORT:-3000}" HOSTNAME=0.0.0.0 node server.js &
+PORT="${PORT:-3100}" HOSTNAME=0.0.0.0 node server.js &
 web=$!
 
 stopping=0
