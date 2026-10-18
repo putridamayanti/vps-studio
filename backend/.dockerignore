@@ -1,0 +1,6 @@
+.env
+.env.*
+data
+vps-studio
+Dockerfile
+README.md

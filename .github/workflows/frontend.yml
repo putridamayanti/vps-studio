@@ -1,10 +1,14 @@
-name: Docker image
+name: Frontend image
 
-# Builds the combined API + dashboard image and pushes it to ghcr.io/<owner>/<repo>.
+# Builds the frontend image and pushes it to ghcr.io/<owner>/<repo>-frontend.
+# Runs when frontend/ changes on main, on every v* tag, or by hand.
 on:
   push:
     branches: [main]
     tags: ["v*"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend.yml"
   workflow_dispatch:
 
 permissions:
@@ -29,7 +33,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository }}-frontend
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
@@ -37,10 +41,10 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./frontend
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend

@@ -1,0 +1,26 @@
+# Runs the published images: the API (internal only) and the dashboard on port 3100.
+# Configure with .env next to this file (see .env.example).
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE in .env}
+    restart: unless-stopped
+    environment:
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      STARTUP_GRACE_SECONDS: ${STARTUP_GRACE_SECONDS:-5}
+    volumes:
+      - vps-studio-data:/data
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE in .env}
+    restart: unless-stopped
+    environment:
+      API_URL: http://backend:8081
+    ports:
+      - "${FRONTEND_PORT:-3100}:3100"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  vps-studio-data:

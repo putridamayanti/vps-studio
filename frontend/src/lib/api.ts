@@ -19,7 +19,7 @@ type RequestOptions = {
   apiKey?: string
 }
 
-// Requests go to /api/* on this origin; next.config.ts proxies them to the Go server.
+// Requests go to /api/* on this origin; src/proxy.ts forwards them to the Go server.
 export async function api<T = unknown>(path: string, opts: RequestOptions = {}): Promise<T> {
   const key = opts.apiKey ?? getApiKey()
   const headers: Record<string, string> = {}
